@@ -15,14 +15,17 @@ import "./swapper-contract/ISwapper.sol";
 contract FlashLoanArbitrage is IFlashLoanRecipient {
     using SafeMath for uint256;
 
+    event TradeAmount(uint256 tradeAmount);
+
     address public immutable vault;
     address public swapper;
     address public owner;
+    address public addressProviderCurve;
 
-    constructor(address _vault, address _swapper) {
+    constructor(address _vault, address _addressProviderCurve) {
         owner = msg.sender;
         vault = _vault;
-        swapper = _swapper;
+        addressProviderCurve = _addressProviderCurve;
     }
 
     struct Trade {
@@ -35,20 +38,120 @@ contract FlashLoanArbitrage is IFlashLoanRecipient {
         string exchange;
     }
 
-    function executeTrade(bytes calldata userData) public {
-        Trade[] memory trades = abi.decode(userData, (Trade[]));
+    function getAmountOutMin(
+        address router,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amount
+    ) public view returns (uint256) {
+        address[] memory path;
+        path = new address[](2);
+        path[0] = _tokenIn;
+        path[1] = _tokenOut;
+        uint256[] memory amountOutMins = ISwapRouterV2(router).getAmountsOut(
+            _amount,
+            path
+        );
+        return amountOutMins[path.length - 1];
+    }
 
+    function swapTokenOnUnsiwapv2(
+        address router,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amount
+    ) public returns (uint256[] memory) {
+        IERC20(_tokenIn).approve(router, _amount);
+        address[] memory path;
+        path = new address[](2);
+        path[0] = _tokenIn;
+        path[1] = _tokenOut;
+        uint256 deadline = block.timestamp + 300;
+        uint256 minAmount = getAmountOutMin(
+            router,
+            _tokenIn,
+            _tokenOut,
+            _amount
+        );
+        uint256[] memory amountOut = ISwapRouterV2(router)
+            .swapExactTokensForTokens(
+                _amount,
+                minAmount,
+                path,
+                address(this),
+                deadline
+            );
+        return amountOut;
+    }
+
+    function swapTokenOnUniswapv3(
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amount,
+        uint24 poolFee,
+        address router
+    ) public returns (uint256) {
+        IERC20(_tokenIn).approve(router, _amount);
+
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter
+            .ExactInputSingleParams({
+                tokenIn: _tokenIn,
+                tokenOut: _tokenOut,
+                fee: poolFee,
+                recipient: address(this),
+                deadline: block.timestamp + 300,
+                amountIn: _amount,
+                amountOutMinimum: 1,
+                sqrtPriceLimitX96: 0
+            });
+
+        uint256 amountOut = ISwapRouter(router).exactInputSingle(params);
+        return amountOut;
+    }
+
+    function returnsExchangeAddress(uint256 _id) public view returns (address) {
+        return IProvider(addressProviderCurve).get_address(_id);
+    }
+
+    function exchangesTokensOnCurve(
+        address _pool,
+        address _from,
+        address _to,
+        uint256 _amount
+    ) public {
+        address exchangeContract = returnsExchangeAddress(2);
+        IERC20(_from).approve(exchangeContract, _amount);
+
+        uint256 expected = ISwap(exchangeContract).get_exchange_amount(
+            _pool,
+            _from,
+            _to,
+            _amount
+        );
+
+        ISwap(exchangeContract).exchange(
+            _pool,
+            _from,
+            _to,
+            _amount,
+            expected,
+            address(this)
+        );
+    }
+
+    function executeTrade(Trade[] memory trades) public {
         uint256 tradeAmount = trades[0].amount;
-        
+
         for (uint256 i = 0; i < trades.length; i++) {
-            uint256 tokenOutInitialBalance = IERC20(trades[i]._tokenOut)
-                .balanceOf(address(this));
+            uint256 tokenOutInitialBalance = IERC20(trades[i]._tokenOut).balanceOf(
+                address(this)
+            );
 
             if (
                 keccak256(abi.encodePacked(trades[i].exchange)) ==
                 keccak256(abi.encodePacked("SUSHISWAP"))
             ) {
-                ISwapper(swapper).swapTokenOnUnsiwapv2(
+                swapTokenOnUnsiwapv2(
                     trades[i]._router,
                     trades[i]._tokenIn,
                     trades[i]._tokenOut,
@@ -59,10 +162,10 @@ contract FlashLoanArbitrage is IFlashLoanRecipient {
                 keccak256(abi.encodePacked(trades[i].exchange)) ==
                 keccak256(abi.encodePacked("UNISWAPV3"))
             ) {
-                ISwapper(swapper).swapTokenOnUniswapv3(
+                swapTokenOnUniswapv3(
                     trades[i]._tokenIn,
                     trades[i]._tokenOut,
-                    tradeAmount,
+                    trades[i].amount,
                     trades[i].poolFee,
                     trades[i]._router
                 );
@@ -71,19 +174,20 @@ contract FlashLoanArbitrage is IFlashLoanRecipient {
                 keccak256(abi.encodePacked(trades[i].exchange)) ==
                 keccak256(abi.encodePacked("CURVE"))
             ) {
-                ISwapper(swapper).exchangesTokensOnCurve(
+                exchangesTokensOnCurve(
                     trades[i].pool,
                     trades[i]._tokenIn,
                     trades[i]._tokenOut,
                     tradeAmount
                 );
             }
-
             uint256 tokenOutBalance = IERC20(trades[i]._tokenOut).balanceOf(
                 address(this)
             );
             tradeAmount = tokenOutBalance - tokenOutInitialBalance;
         }
+
+        emit TradeAmount(tradeAmount);
     }
 
     function receiveFlashLoan(
@@ -93,8 +197,9 @@ contract FlashLoanArbitrage is IFlashLoanRecipient {
         bytes calldata userData
     ) external override {
         IERC20 token = tokens[0];
+        Trade[] memory trades = abi.decode(userData, (Trade[]));
 
-        // executeTrade(userData);
+        executeTrade(trades);
 
         // Return loan
         token.transfer(vault, amounts[0]);
