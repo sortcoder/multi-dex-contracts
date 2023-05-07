@@ -139,55 +139,136 @@ contract FlashLoanArbitrage is IFlashLoanRecipient {
         );
     }
 
-    function executeTrade(Trade[] memory trades) public {
-        uint256 tradeAmount = trades[0].amount;
+    function executeTrade(Trade memory trade) public {
+        uint256 tradeAmount = trade.amount;
 
-        for (uint256 i = 0; i < trades.length; i++) {
-            uint256 tokenOutInitialBalance = IERC20(trades[i]._tokenOut).balanceOf(
-                address(this)
-            );
+        uint256 tokenOutInitialBalance = IERC20(trade._tokenOut).balanceOf(
+            address(this)
+        );
 
-            if (
-                keccak256(abi.encodePacked(trades[i].exchange)) ==
-                keccak256(abi.encodePacked("SUSHISWAP"))
-            ) {
-                swapTokenOnUnsiwapv2(
-                    trades[i]._router,
-                    trades[i]._tokenIn,
-                    trades[i]._tokenOut,
-                    tradeAmount
-                );
-            }
-            if (
-                keccak256(abi.encodePacked(trades[i].exchange)) ==
-                keccak256(abi.encodePacked("UNISWAPV3"))
-            ) {
-                swapTokenOnUniswapv3(
-                    trades[i]._tokenIn,
-                    trades[i]._tokenOut,
-                    trades[i].amount,
-                    trades[i].poolFee,
-                    trades[i]._router
-                );
-            }
-            if (
-                keccak256(abi.encodePacked(trades[i].exchange)) ==
-                keccak256(abi.encodePacked("CURVE"))
-            ) {
-                exchangesTokensOnCurve(
-                    trades[i].pool,
-                    trades[i]._tokenIn,
-                    trades[i]._tokenOut,
-                    tradeAmount
-                );
-            }
-            uint256 tokenOutBalance = IERC20(trades[i]._tokenOut).balanceOf(
-                address(this)
+        if (
+            keccak256(abi.encodePacked(trade.exchange)) ==
+            keccak256(abi.encodePacked("SUSHISWAP"))
+        ) {
+            swapTokenOnUnsiwapv2(
+                trade._router,
+                trade._tokenIn,
+                trade._tokenOut,
+                tradeAmount
             );
-            tradeAmount = tokenOutBalance - tokenOutInitialBalance;
         }
+        if (
+            keccak256(abi.encodePacked(trade.exchange)) ==
+            keccak256(abi.encodePacked("UNISWAPV3"))
+        ) {
+            swapTokenOnUniswapv3(
+                trade._tokenIn,
+                trade._tokenOut,
+                trade.amount,
+                trade.poolFee,
+                trade._router
+            );
+        }
+        if (
+            keccak256(abi.encodePacked(trade.exchange)) ==
+            keccak256(abi.encodePacked("CURVE"))
+        ) {
+            exchangesTokensOnCurve(
+                trade.pool,
+                trade._tokenIn,
+                trade._tokenOut,
+                tradeAmount
+            );
+        }
+        uint256 tokenOutBalance = IERC20(trade._tokenOut).balanceOf(
+            address(this)
+        );
+        tradeAmount = tokenOutBalance - tokenOutInitialBalance;
+    }
 
-        emit TradeAmount(tradeAmount);
+    // function executeTrade(Trade[] memory trades) public {
+    //     uint256 tradeAmount = trades[0].amount;
+
+    //     for (uint256 i = 0; i < trades.length; i++) {
+    //         uint256 tokenOutInitialBalance = IERC20(trades[i]._tokenOut).balanceOf(
+    //             address(this)
+    //         );
+
+    //         if (
+    //             keccak256(abi.encodePacked(trades[i].exchange)) ==
+    //             keccak256(abi.encodePacked("SUSHISWAP"))
+    //         ) {
+    //             swapTokenOnUnsiwapv2(
+    //                 trades[i]._router,
+    //                 trades[i]._tokenIn,
+    //                 trades[i]._tokenOut,
+    //                 tradeAmount
+    //             );
+    //         }
+    //         if (
+    //             keccak256(abi.encodePacked(trades[i].exchange)) ==
+    //             keccak256(abi.encodePacked("UNISWAPV3"))
+    //         ) {
+    //             swapTokenOnUniswapv3(
+    //                 trades[i]._tokenIn,
+    //                 trades[i]._tokenOut,
+    //                 trades[i].amount,
+    //                 trades[i].poolFee,
+    //                 trades[i]._router
+    //             );
+    //         }
+    //         if (
+    //             keccak256(abi.encodePacked(trades[i].exchange)) ==
+    //             keccak256(abi.encodePacked("CURVE"))
+    //         ) {
+    //             exchangesTokensOnCurve(
+    //                 trades[i].pool,
+    //                 trades[i]._tokenIn,
+    //                 trades[i]._tokenOut,
+    //                 tradeAmount
+    //             );
+    //         }
+    //         uint256 tokenOutBalance = IERC20(trades[i]._tokenOut).balanceOf(
+    //             address(this)
+    //         );
+    //         tradeAmount = tokenOutBalance - tokenOutInitialBalance;
+    //     }
+
+    //     emit TradeAmount(tradeAmount);
+    // }
+
+    function calculateTradeAmount(uint256 initialBalance, address token)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 tokenOutBalance = IERC20(token).balanceOf(address(this));
+        uint256 tradeAmount = tokenOutBalance - initialBalance;
+        return tradeAmount;
+    }
+
+    function executeTriTrade(
+        Trade memory trade1,
+        Trade memory trade2,
+        Trade memory trade3
+    ) public {
+        //Trade 1
+        uint256 tradeAmount = trade1.amount;
+        uint256 token2InitialBalance = IERC20(trade2._tokenIn).balanceOf(
+            address(this)
+        );
+        executeTrade(trade1);
+
+        //Trade 2
+        tradeAmount = calculateTradeAmount(token2InitialBalance, trade2._tokenIn);
+        uint256 token3InitialBalance = IERC20(trade3._tokenIn).balanceOf(
+            address(this)
+        );
+        executeTrade(trade2);
+
+        //Trade 3
+        tradeAmount = calculateTradeAmount(token3InitialBalance, trade3._tokenIn);
+        executeTrade(trade3);
     }
 
     function receiveFlashLoan(
@@ -197,9 +278,10 @@ contract FlashLoanArbitrage is IFlashLoanRecipient {
         bytes calldata userData
     ) external override {
         IERC20 token = tokens[0];
-        Trade[] memory trades = abi.decode(userData, (Trade[]));
+        (Trade memory trade1, Trade memory trade2, Trade memory trade3) = abi
+            .decode(userData, (Trade, Trade, Trade));
 
-        executeTrade(trades);
+        executeTriTrade(trade1, trade2, trade3);
 
         // Return loan
         token.transfer(vault, amounts[0]);
